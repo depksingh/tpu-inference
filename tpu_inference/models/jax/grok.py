@@ -2,10 +2,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, cast
 
-import jax
 import jax.lax
-from flax import nnx
-from jax import numpy as jnp
 from transformers import PretrainedConfig, modeling_flax_utils
 
 # vLLM code
@@ -33,28 +30,27 @@ from tpu_inference.models.jax.jax_intermediate_tensor import \
 from tpu_inference.models.jax.utils.weight_utils import StandardWeightLoader
 from tpu_inference.utils import get_mesh_shape_product
 from tpu_inference.layers.jax.rms_norm import dual_rmsnorm_forward 
-
-# vLLM code end
-
-
-
-from sgl_jax.srt.layers.embeddings import (
+from tpu_inference.layers.linear import LinearBase
+from tpu_inference.models.jax.utils.sgl_weight_utils import WeightLoader, WeightMapping
+from tpu_inference.models.jax.utils.moe_weight_utils import create_moe_weights_mapping
+from tpu_inference.layers.embeddings import (
     Embed,
     ParallelLMHead,
     RotaryEmbedding,
     _yarn_find_correction_range,
     _yarn_get_mscale,
 )
+
+# vLLM code end
+
+
 from sgl_jax.srt.layers.fused_moe import FusedEPMoE
-from sgl_jax.srt.layers.linear import LinearBase
 from sgl_jax.srt.layers.logits_processor import (
     LogitsMetadata,
     LogitsProcessor,
     LogitsProcessorOutput,
 )
-from sgl_jax.srt.layers.moe import EPMoE, create_moe_weights_mapping
-from tpu_commons.models.jax.attention import attention
-from sgl_jax.srt.utils.weight_utils import WeightLoader, WeightMapping
+from sgl_jax.srt.layers.moe import EPMoE
 
 logger = logging.getLogger(__name__)
 
@@ -881,14 +877,22 @@ class Grok1ForCausalLM(nnx.Module):
             kv_caches, input_ids, attention_metadata, intermediate_tensors,
         )
 
-        output = self.logits_processor(hidden_states, cast(Embed, self.lm_head), logits_metadata)
+        # This needs to be removed.
+        # output = self.logits_processor(hidden_states, cast(Embed, self.lm_head), logits_metadata)
 
         return output, layers_kv_fused, True, layers_topk_ids
 
-    def load_weights(self, model_config: ModelConfig) -> None:
+    def compute_logits(self, hidden_states: jax.Array) -> jax.Array:
+        if self.vllm_config.model_config.hf_config.tie_word_embeddings:
+            logits = jnp.dot(hidden_states, self.model.lm_head.value.T)
+        else:
+            logits = jnp.dot(hidden_states, self.model.lm_head.value)
+        return logits
+
+    def load_weights(self, vllm_config: VllmConfig) -> None:
         loader = WeightLoader(
             model=self,
-            model_config=model_config,
+            model_config=vllm_config,
             mesh=self.mesh,
             dtype=jnp.bfloat16,
         )
