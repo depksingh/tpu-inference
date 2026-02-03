@@ -40,17 +40,18 @@ from tpu_inference.layers.embeddings import (
     _yarn_find_correction_range,
     _yarn_get_mscale,
 )
+from tpu_inference.layers.jax.moe import MoE
 
 # vLLM code end
 
 
-from sgl_jax.srt.layers.fused_moe import FusedEPMoE
-from sgl_jax.srt.layers.logits_processor import (
-    LogitsMetadata,
-    LogitsProcessor,
-    LogitsProcessorOutput,
-)
-from sgl_jax.srt.layers.moe import EPMoE
+#from sgl_jax.srt.layers.fused_moe import FusedEPMoE
+#from sgl_jax.srt.layers.logits_processor import (
+#    LogitsMetadata,
+#    LogitsProcessor,
+#    LogitsProcessorOutput,
+#)
+#from sgl_jax.srt.layers.moe import EPMoE
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +229,7 @@ class Grok1MoE(nnx.Module):
     kernel is used for the forward pass, with outputs reduced across ranks.
     """
 
-    experts: FusedEPMoE | EPMoE
+    experts: MoE
 
     def __init__(
         self,
@@ -265,36 +266,6 @@ class Grok1MoE(nnx.Module):
         self.moe_backend = getattr(config, "moe_backend", "epmoe")
         self.use_fused = self.moe_backend == "fused"
 
-        if self.use_fused:
-            self.experts = FusedEPMoE(
-                hidden_size=hidden_size,
-                num_experts=num_experts,
-                num_experts_per_tok=self.top_k,
-                intermediate_dim=intermediate_size,
-                mesh=mesh,
-                activation="gelu",
-                ep_size=config.ep_size,
-                weight_dtype=dtype,
-                dtype=dtype,
-                layer_id=layer_id,
-                renormalize_topk_logits=False,  # Match sglang behavior
-                quantization_config=getattr(config, "quantization_config", None),
-            )
-        else:
-            self.experts = EPMoE(
-                hidden_size=config.hidden_size,
-                num_experts=num_experts,
-                num_experts_per_tok=self.top_k,
-                intermediate_dim=intermediate_size,
-                mesh=mesh,
-                activation="gelu",
-                ep_size=config.ep_size,
-                weight_dtype=dtype,
-                dtype=dtype,
-                layer_id=layer_id,
-                quantization_config=getattr(config, "quantization_config", None),
-            )
-
     def __call__(self, hidden_states: jax.Array) -> tuple[jax.Array, jax.Array | None]:
         # Router computation with soft capping
         router_logits, _ = self.gate(hidden_states)
@@ -307,14 +278,14 @@ class Grok1MoE(nnx.Module):
         if self.use_fused:
             # Fused kernel: pass router_logits directly
             # Top-K selection is handled internally by the kernel
-            assert isinstance(self.experts, FusedEPMoE)
+            #assert isinstance(self.experts, FusedEPMoE)
             return self.experts(hidden_states, router_logits), None
         else:
             # EPMoE: compute top-k routing weights using sglang-style approach:
             # 1. Compute global softmax over ALL experts (not just top-k)
             # 2. Select top-k experts based on logits
             # 3. Extract corresponding weights (no renormalization)
-            assert isinstance(self.experts, EPMoE)
+            #assert isinstance(self.experts, EPMoE)
             top_k_weights, top_k_indices = self._custom_topk(
                 router_logits, self.top_k, renormalize=False
             )
@@ -662,13 +633,13 @@ class Grok1DecoderLayer(nnx.Module):
         )
 
         # Feed-forward network
-        if self.residual_moe:
-            hidden_states, topk_ids = self.moe_with_rmoe(hidden_states)
-        else:
-            hidden_states, topk_ids = self.block_sparse_moe(hidden_states)
+        #if self.residual_moe:
+            #hidden_states, topk_ids = self.moe_with_rmoe(hidden_states)
+        #else:
+            #hidden_states, topk_ids = self.block_sparse_moe(hidden_states)
 
         # Return with deferred post-MoE norm (matching PyTorch)
-        return hidden_states, residual, self.post_moe_norm, kv_cache, topk_ids
+        return hidden_states, residual, self.post_moe_norm, kv_cache, None #topk_ids
 
 
 class Grok1Model(nnx.Module):
